@@ -1,0 +1,771 @@
+---
+title: "Variables Importantes: Random Forest vs Lasso"
+subtitle: "Implementación Regularización Lasso"
+author: "Flores, Vanesa - Gianni, Tomás"
+date: "18 de Diciembre de 2023"
+output:
+  html_document:
+    toc: yes
+    code_folding: show
+    toc_float: yes
+    df_print: paged
+    theme: united
+    code_download: true
+---
+
+En esta notebook realizaremos paso a paso la implementación de un modelo lineal múltiple con regularización Lasso. Se analizarán las variables de mayor importancia que se desprende de esta técnica, y observaremos cómo varía el rendimiento del modelo tomando como métrica de referencia el RMSE y el R cuadrado.
+
+
+##  <font>Librerías útiles</font>
+```{r}
+library("caret")
+library("dplyr")
+library("ggplot2")
+library("glmnet")
+library("tidyverse")
+library("tidymodels")
+library("cowplot")
+```
+
+##  <font>Carga de Datos</font>
+
+```{r}
+# Declaramos la ruta donde se alojan los datasets
+datasets.dir = "C:/Users/tgian/Desktop/EEA-TPs/TP Final/"
+
+# Datos
+data <- read.table(paste0(datasets.dir,"Medicalpremium_new.csv"),
+                              sep=",", dec=".", header = TRUE)
+```
+
+##  <font>Modelo 1</font>
+
+En este primer modelo realizaremos una implementación con __todas las variables originales del dataset__, excluyendo las variables de Peso, Edad y Altura categorizadas creadas.  
+
+```{r}
+# Selección de variables para el entrenamiento
+data_model_1 = data %>% select (-c("Edad_Cat","Altura_Cat","Peso_Cat"))
+```
+
+###  <font>Separación en train y test</font>
+
+Realizaremos una partición simple de los datos conjuntos de entrenamiento y de testeo, con 70% y 30% de los registros respectivamente:
+
+```{r}
+# Establecemos una semilla para garantizar reproducibilidad
+set.seed(100005)
+
+# Partición en train/test:
+train_test <- data_model_1 %>% initial_split(prop = 0.7)
+train <- training(train_test)
+test <- testing(train_test)
+```
+
+En lo que sigue, se entrenará un modelo lineal aplicando la regularización Lasso con **alfa = 1**, para anlizar la selección de variables:
+```{r}
+# Vector con los precios:
+prices_vector = train$Precio_usd
+# Matriz con los regresores
+medical_mtx = model.matrix(Precio_usd~., data = train)
+```
+
+###  <font>Entrenamiento del modelo</font>
+
+Aplicamos la función glmnet para incluir la regularización en el modelo lineal: ésta cuenta con los siguientes parámetros:\
+- **x**: matriz de variables regresoras\
+- **y**: vector de la variable target (en nuestro caso, el precio)\
+- **alpha**: tipo de regularización, donde alpha = 1 se utiliza para regularización Lasso\
+```{r}
+# Modelo Lasso
+lasso.mod_1 = glmnet(x = medical_mtx, # Matriz de regresores
+                   y = prices_vector, # Vector con precios (variable target)
+                   alpha = 1, # regularización Lasso
+                   standardize = FALSE)
+
+# Aplicamos la función tidy para obtener los coeficientes del modelo:                
+lasso_coef_1 = lasso.mod_1 %>% 
+  tidy() %>% 
+  arrange(step)
+lasso_coef_1
+```
+
+###  <font>Gráficos e importancia de variables</font>
+
+Ploteamos valores de los coeficientes vs lambda para entender cómo van eliminándose las variables al hacer más restrictiva la regularización, es decir, al aumentar el valor de lambda (o su logaritmo):
+
+```{r}
+plot(lasso.mod_1, "lambda")
+```
+
+A partir de este gráfico, analizaremos la importancia de variables del modelo lineal bajo regularización Lasso.\
+
+En el siguiente gráfico se mostrarán las variables que "sobreviven" a partir de un valor de lambda determinado, seleccionado meidante una inspección visual de los gráficos anteriores (y excluyendo interceptos). Más adelante se seleccionará el valor de **lambda óptimo** para realizar las predicciones sobre nuestros datos.
+```{r}
+# Seleccionamos los terminos que sobreviven para valores altos de lambda
+terminos_sobrevientes = lasso_coef_1 %>% 
+  filter(log(lambda)>0.5, term != "(Intercept)") %>%
+  select(term) %>% 
+  distinct() %>% 
+  pull()
+
+# Graficamos
+lasso_coef_1 %>% filter(term %in% terminos_sobrevientes) %>% 
+  ggplot(., aes(log(lambda), estimate, group=term, color=term)) +
+  geom_line(linewidth=1.1) +
+  geom_hline(yintercept = 0, linetype='dashed') +
+  theme_bw() +
+  labs(title="Lasso", y="Coeficientes", subtitle= "Importancia de variables - Modelo 1") +
+  scale_color_brewer(palette = 'Set1')
+```
+Si realizamos un "zoom" sobre este gráfico, descubriremos las variables más importantes, es decir, las últimas para las cuales su coeficiente pasa a valer cero gracias a la regularización:
+
+```{r}
+# Seleccionamos los terminos que sobreviven para valores altos de lambda
+terminos_sobrevientes = lasso_coef_1 %>% 
+  filter(log(lambda)>1.4, term != "(Intercept)") %>%
+  select(term) %>% 
+  distinct() %>% 
+  pull()
+# Graficamos
+lasso_coef_1 %>% filter(term %in% terminos_sobrevientes) %>% 
+  ggplot(., aes(log(lambda), estimate, group=term, color=term)) +
+  geom_line(linewidth=1.1) +
+  geom_hline(yintercept = 0, linetype='dashed') +
+  theme_bw() +
+  labs(title="Lasso", y="Coeficientes", subtitle= "\"Mejores\" variables - Modelo 1") +
+  scale_color_brewer(palette = 'Set1')
+```
+Representamos esta información en forma tabular para detectar las variables menos imporantes para el modelo:
+```{r}
+# Extraigo coeficientes excluyendo interceptos:
+lasso_coef_1 <- lasso.mod_1 %>%
+  tidy() %>%
+  filter(!(term == "(Intercept)")) %>%
+  arrange(step)
+
+# Tomo valor máximo de lambda para cada regresor:
+max_lambda_values <- lasso_coef_1 %>%
+  group_by(term) %>%
+  summarize(MaxLambda = max(lambda))
+
+# Ordeno valores descendentemente y presento como dataframe:
+sorted_max_lambda_values <- max_lambda_values %>%
+  arrange(desc(MaxLambda))
+
+print(sorted_max_lambda_values)
+```
+Las variables menos importantes para este modelo resultaron ser:\
+- **Alergias**\
+- **Diabetes**\
+- **ProblemasPresionArterial**\
+
+Éstas serán eliminadas en el segundo modelo que aplicaremos.
+
+
+###  <font>Selección de lambda óptimo</font>
+
+La función cv.glmnet permite realizar una selección del valor óptimo del parámetro lambda aplicando **cross-validation**: para ello, requiere de los siguientes parámetros:\
+- **x**: el dataset con los regresores del modelo\
+- **y**: el vector de variable target\
+- **alpha**: parámetro que define el tipo de regularización a aplicar; en nuestro caso, **alpha = 1** implica regularización Lasso\
+- **standardize**: booleano True o False para definir si se requiere normalizar los datos\ 
+
+Además, se incluye un nuevo parámetro:
+
+- **type.measure**: función de pérdida/error que se va a utilizar en CV. Para los modelos de regularización el default es **MSE**.
+
+```{r}
+# Aplicamos cross-validation para encontrar el valor óptimo de lambda:
+lasso_cv_1 = cv.glmnet(x = medical_mtx, 
+                     y = prices_vector, 
+                     alpha = 1, 
+                     standardize = FALSE)
+```
+Graficamos los resultados:
+
+```{r}
+# Este plot muestra la media del MSE con su límite superior e inferior y la cantidad de variables que sobreviven para cada valor de lambda.
+plot(lasso_cv_1)
+```
+Entonces, el valor óptimo de lambda, es decir, el que minimiza el MSE del cross-validation aplicado, será:
+```{r}
+print(paste("Valor de lambda óptimo - Modelo 1: ",lasso_cv_1$lambda.min))
+```
+
+###  <font>Modelo final con lambda optimizado</font>
+
+Seleccionamos ahora el valor de lambda óptimo hallado (el que minimiza el MSE) para crear el modelo final:
+```{r}
+lasso_lambda_opt_1 = lasso_cv_1$lambda.min
+# Entrenamiento modelo óptimo
+lasso_opt_1 = glmnet(x = medical_mtx, # Matriz de regresores
+                   y = prices_vector, # Vector de la variable a predecir
+                   alpha = 1, # Indicador del tipo de regularizacion
+                   standardize = FALSE, # Estandarizamos
+                   lambda = lasso_lambda_opt_1)
+# Salida en formato tidy
+lasso_opt_1 %>% tidy()
+```
+
+Por ende, este modelo explica el **65%** de la desviación.
+
+
+###  <font>Predicciones</font>
+
+Con el valor óptimo de lambda hallado, evaluamos el modelo utilizando como métricas el **MSE** y **Coeficiente de Determinación (R^2)**: el RMSE nos proporciona una medida absoluta de la precisión de las predicciones, mientras que el R cuadrado nos ofrece una medida relativa de la capacidad explicativa del modelo en términos de la variabilidad total de la variable de respuesta. Ambas métricas se calcularán para ambos conjuntos de datos.
+
+```{r}
+# Función para calcular predicciones: 
+augment_glmnet = function(df, y, model) {
+  # formula del modelo
+  formula = as.formula(str_c(y, "~.")) 
+  # Matriz con los regresores
+  data_matrix = model.matrix(formula, data = df)
+  # predicciones 
+  predictions = predict(model, data_matrix)
+  pred_colname = str_c(y, "predicho", sep = "_")
+  df[pred_colname] = predictions
+  return(df)
+}
+```
+
+Aplicamos la fórmula a los datasets de train y test para obtener predicciones:
+
+En el set de entrenamiento:
+```{r}
+# TRAIN
+# Predicción en train:
+train_augmented <- augment_glmnet(df = train, y = "Precio_usd", model = lasso_opt_1)
+# Calculamos el error cuadrático medio (MSE)
+rmse <- sqrt(mean((train_augmented$Precio_usd_predicho - train$Precio_usd)^2))
+print(paste("Error Cuadrático Medio (MSE) en train:", rmse))
+
+# Calculamos el coeficiente de determinación (R^2)
+r_squared <- 1 - (sum((train$Precio_usd - train_augmented$Precio_usd_predicho)^2) / sum((train$Precio_usd - mean(train$Precio_usd))^2))
+print(paste("Coeficiente de Determinación (R^2) en train:", r_squared))
+```
+
+En el set de testeo:
+```{r}
+# TEST
+# Predicción en test:
+test_augmented <- augment_glmnet(df = test, y = "Precio_usd", model = lasso_opt_1)
+# Calculamos el error cuadrático medio (MSE)
+rmse <- sqrt(mean((test_augmented$Precio_usd_predicho - test$Precio_usd)^2))
+print(paste("Error Cuadrático Medio (MSE) en test:", rmse))
+
+# Calculamos el coeficiente de determinación (R^2)
+r_squared <- 1 - (sum((test$Precio_usd - test_augmented$Precio_usd_predicho)^2) / sum((test$Precio_usd - mean(test$Precio_usd))^2))
+print(paste("Coeficiente de Determinación (R^2) en test:", r_squared))
+```
+###  <font>Resumen</font>
+
+Generamos una tabla con los resultados, que irá acumulando las métricas de todos los modelos que apliquemos:
+
+```{r}
+evaluar_modelo <- function(modelo, train_data, test_data, nombre_modelo, resultados_df = NULL) {
+  # Predicciones en ambos conjuntos
+  train_augmented <- augment_glmnet(df = train, y = "Precio_usd", model = lasso_opt_1)
+  test_augmented <- augment_glmnet(df = test, y = "Precio_usd", model = lasso_opt_1)
+
+  # Cálculo de métricas
+  rmse_train <- sqrt(mean((train_augmented$Precio_usd_predicho - train$Precio_usd)^2))
+  rmse_test <- sqrt(mean((test_augmented$Precio_usd_predicho - test$Precio_usd)^2))
+
+  r_squared_train <- 1 - (sum((train$Precio_usd - train_augmented$Precio_usd_predicho)^2) / sum((train$Precio_usd - mean(train$Precio_usd))^2))
+
+  r_squared_test <- 1 - (sum((test$Precio_usd - test_augmented$Precio_usd_predicho)^2) / sum((test$Precio_usd - mean(test$Precio_usd))^2))
+  
+  # Dataframe con resultados
+  resultados_modelo <- data.frame(
+    Modelo = nombre_modelo,
+    Conjunto = c("Train", "Test"),
+    RMSE = c(rmse_train, rmse_test),
+    Rcuadrado = c(r_squared_train, r_squared_test)
+  )
+
+  # Agregar los resultados al dataframe en caso de que exista o no
+  if (is.null(resultados_df)) {
+    resultados_df <- resultados_modelo
+  } else {
+    resultados_df <- rbind(resultados_df, resultados_modelo)
+  }
+
+  return(resultados_df)
+}
+
+resultados_1 <- evaluar_modelo(modelo = lasso_opt_1, train_data = train, test_data = test, nombre_modelo = "Modelo_Lasso_1")
+resultados_1
+```
+
+##  <font>Modelo 2</font>
+
+En este segundo modelo repetiremos los pasos aplicados en el Modelo 1, pero ahora __excluiremos las variables menos importantes__ halladas en el Modelo 1: - **Alergias**, **Diabetes** y **ProblemasPresionArterial**. Observaremos cómo este cambio cambio impacta en el modelo.
+
+
+```{r}
+# Selección de variables para el entrenamiento
+data_model_2 = data %>% select (-c("Alergias", "Diabetes","ProblemasPresionArterial","Edad_Cat","Altura_Cat","Peso_Cat"))
+```
+
+###  <font>Separación en train y test</font>
+
+Realizaremos una partición simple de los datos conjuntos de entrenamiento y de testeo, con 70% y 30% de los registros respectivamente:
+
+```{r}
+# Establecemos una semilla para garantizar reproducibilidad
+set.seed(100005)
+
+# Partición en train/test:
+train_test <- data_model_2 %>% initial_split(prop = 0.7)
+train <- training(train_test)
+test <- testing(train_test)
+```
+
+En lo que sigue, se entrenará un modelo lineal aplicando la regularización Lasso con **alfa = 1**, para anlizar la selección de variables:
+```{r}
+# Vector con los precios:
+prices_vector = train$Precio_usd
+# Matriz con los regresores
+medical_mtx = model.matrix(Precio_usd~., data = train)
+```
+###  <font>Entrenamiento del modelo</font>
+
+Aplicamos la misma función glmnet para incluir la regularización en el modelo lineal:
+```{r}
+# Modelo Lasso
+lasso.mod_2 = glmnet(x = medical_mtx, # Matriz de regresores
+                   y = prices_vector, # Vector con precios (variable target)
+                   alpha = 1, # regularización Lasso
+                   standardize = FALSE)
+
+# Aplicamos la función tidy para obtener los coeficientes del modelo:                
+lasso_coef_2 = lasso.mod_2 %>% 
+  tidy() %>% 
+  arrange(step)
+lasso_coef_2
+```
+
+###  <font>Gráficos e importancia de variables</font>
+
+Ploteamos nuevamente valores de valores de los coeficientes vs lambda para entender cómo van eliminándose las variables al hacer más restrictiva la regularización:
+
+```{r}
+plot(lasso.mod_2, "lambda")
+```
+Analizamos nuevamente la importancia de variables:
+```{r}
+# Seleccionamos los terminos que sobreviven para valores altos de lambda
+terminos_sobrevientes = lasso_coef_2 %>% 
+  filter(log(lambda)>0.5, term != "(Intercept)") %>%
+  select(term) %>% 
+  distinct() %>% 
+  pull()
+
+# Graficamos
+lasso_coef_2 %>% filter(term %in% terminos_sobrevientes) %>% 
+  ggplot(., aes(log(lambda), estimate, group=term, color=term)) +
+  geom_line(linewidth=1.1) +
+  geom_hline(yintercept = 0, linetype='dashed') +
+  theme_bw() +
+  labs(title="Lasso", y="Coeficientes", subtitle= "Importancia de variables - Modelo 2") +
+  scale_color_brewer(palette = 'Set1')
+```
+Podemos notar que el gráfico se mantiene inalterado respecto del modeo previo para los valores de lambda representados.
+Volvemos a hacer un zoom en este plot:
+
+```{r}
+# Seleccionamos los terminos que sobreviven para valores altos de lambda
+terminos_sobrevientes = lasso_coef_2 %>% 
+  filter(log(lambda)>1.4, term != "(Intercept)") %>%
+  select(term) %>% 
+  distinct() %>% 
+  pull()
+# Graficamos
+lasso_coef_2 %>% filter(term %in% terminos_sobrevientes) %>% 
+  ggplot(., aes(log(lambda), estimate, group=term, color=term)) +
+  geom_line(linewidth=1.1) +
+  geom_hline(yintercept = 0, linetype='dashed') +
+  theme_bw() +
+  labs(title="Lasso", y="Coeficientes", subtitle= "\"Mejores\" variables - Modelo 2") +
+  scale_color_brewer(palette = 'Set1')
+```
+Podemos notar que las variables más importantes se han mantenido respecto de lo que había arrojado el Modelo 1.\
+
+Representamos esta información en forma tabular para detectar las variables menos imporantes para el modelo:
+```{r}
+# Extraigo coeficientes excluyendo interceptos:
+lasso_coef_2 <- lasso.mod_2 %>%
+  tidy() %>%
+  filter(!(term == "(Intercept)")) %>%
+  arrange(step)
+
+# Tomo valor máximo de lambda para cada regresor:
+max_lambda_values <- lasso_coef_2 %>%
+  group_by(term) %>%
+  summarize(MaxLambda = max(lambda))
+
+# Ordeno valores descendentemente y presento como dataframe:
+sorted_max_lambda_values <- max_lambda_values %>%
+  arrange(desc(MaxLambda))
+
+print(sorted_max_lambda_values)
+```
+Las variables menos importantes para este modelo resultaron ser:\
+- **CantCirugiasImportantes	**\
+- **HistorialCancerFamiliar**
+- **Altura**\
+
+Destacamos también que las variables **Edad**, **Peso** y **EnfermedadCronica** se mantuvieron como las más relevantes del modelo.
+
+
+###  <font>Selección de lambda óptimo</font>
+
+Repetimos el proceso para seleccionar el lambda óptimo para este modelo, a fin de realizar con él las predicciones finales y obtener las métricas de performance.
+
+```{r}
+# Aplicamos cross-validation para encontrar el valor óptimo de lambda:
+lasso_cv_2 = cv.glmnet(x = medical_mtx, 
+                     y = prices_vector, 
+                     alpha = 1, 
+                     standardize = FALSE)
+
+# Valor de lambda óptimo:
+print(paste("Valor de lambda óptimo - Modelo 2: ",lasso_cv_2$lambda.min))
+```
+Este valor coincide con el lambda óptimo hallado para el Modelo 1.
+Graficamos los resultados:
+
+```{r}
+# Este plot muestra la media del MSE con su límite superior e inferior y la cantidad de variables que sobreviven para cada valor de lambda.
+plot(lasso_cv_2)
+```
+
+###  <font>Modelo final con lambda optimizado</font>
+
+Seleccionamos ahora el valor de lambda óptimo hallado (el que minimiza el MSE) para crear el modelo final:
+```{r}
+lasso_lambda_opt_2 = lasso_cv_2$lambda.min
+# Entrenamiento modelo óptimo
+lasso_opt_2 = glmnet(x = medical_mtx, # Matriz de regresores
+                   y = prices_vector, # Vector de la variable a predecir
+                   alpha = 1, # Indicador del tipo de regularizacion
+                   standardize = FALSE, # Estandarizamos
+                   lambda = lasso_lambda_opt_2)
+# Salida en formato tidy
+lasso_opt_2 %>% tidy()
+```
+
+Por ende, este modelo explica el **65%** de la desviación, al igual que el Modelo 1.
+
+
+###  <font>Predicciones</font>
+
+Repetimos la evaluación de nuestro modelo usando las métricas **MSE** y **Coeficiente de Determinación (R^2)** sobre los datasets de entrenamiento y testeo:
+
+En el set de entrenamiento:
+```{r}
+# TRAIN
+# Predicción en train:
+train_augmented <- augment_glmnet(df = train, y = "Precio_usd", model = lasso_opt_2)
+# Calculamos el error cuadrático medio (MSE)
+rmse <- sqrt(mean((train_augmented$Precio_usd_predicho - train$Precio_usd)^2))
+print(paste("Error Cuadrático Medio (MSE) en train:", rmse))
+
+# Calculamos el coeficiente de determinación (R^2)
+r_squared <- 1 - (sum((train$Precio_usd - train_augmented$Precio_usd_predicho)^2) / sum((train$Precio_usd - mean(train$Precio_usd))^2))
+print(paste("Coeficiente de Determinación (R^2) en train:", r_squared))
+```
+
+En el set de testeo:
+```{r}
+# TEST
+# Predicción en test:
+test_augmented <- augment_glmnet(df = test, y = "Precio_usd", model = lasso_opt_2)
+# Calculamos el error cuadrático medio (MSE)
+rmse <- sqrt(mean((test_augmented$Precio_usd_predicho - test$Precio_usd)^2))
+print(paste("Error Cuadrático Medio (MSE) en test:", rmse))
+
+# Calculamos el coeficiente de determinación (R^2)
+r_squared <- 1 - (sum((test$Precio_usd - test_augmented$Precio_usd_predicho)^2) / sum((test$Precio_usd - mean(test$Precio_usd))^2))
+print(paste("Coeficiente de Determinación (R^2) en test:", r_squared))
+```
+###  <font>Resumen</font>
+
+```{r}
+
+evaluar_modelo <- function(modelo, train_data, test_data, nombre_modelo, resultados_df = NULL) {
+  # Predicciones en ambos conjuntos
+  train_augmented <- augment_glmnet(df = train, y = "Precio_usd", model = lasso_opt_2)
+  test_augmented <- augment_glmnet(df = test, y = "Precio_usd", model = lasso_opt_2)
+
+  # Cálculo de métricas
+  rmse_train <- sqrt(mean((train_augmented$Precio_usd_predicho - train$Precio_usd)^2))
+  rmse_test <- sqrt(mean((test_augmented$Precio_usd_predicho - test$Precio_usd)^2))
+
+  r_squared_train <- 1 - (sum((train$Precio_usd - train_augmented$Precio_usd_predicho)^2) / sum((train$Precio_usd - mean(train$Precio_usd))^2))
+
+  
+  r_squared_test <- 1 - (sum((test$Precio_usd - test_augmented$Precio_usd_predicho)^2) / sum((test$Precio_usd - mean(test$Precio_usd))^2))
+  
+  # Dataframe con resultados
+  resultados_modelo <- data.frame(
+    Modelo = nombre_modelo,
+    Conjunto = c("Train", "Test"),
+    RMSE = c(rmse_train, rmse_test),
+    Rcuadrado = c(r_squared_train, r_squared_test)
+  )
+
+  # Agregar los resultados al dataframe en caso de que exista o no
+  if (is.null(resultados_df)) {
+    resultados_df <- resultados_modelo
+  } else {
+    resultados_df <- rbind(resultados_df, resultados_modelo)
+  }
+
+  return(resultados_df)
+}
+
+resultados_2 <- evaluar_modelo(modelo = lasso_opt_2, train_data = train, test_data = test, nombre_modelo = "Modelo_Lasso_2")
+resultados <- rbind(resultados_1, resultados_2)
+resultados
+```
+##  <font>Modelo 3</font>
+
+En este tercer y último modelo utilizaremos nuevamente todas las variables del dataset original, pero reemplazando las variables "Peso", "Edad" y "Altura" por sus variantes categorizadas creadas, **Edad_Cat**, **Altura_Cat** y **Peso_Cat**. La librería glmnet aplicará automáticamente **one-hot encoding** para incluirlas dentro de la matriz de regresores.
+
+El análisis a desarrollar será análogo a lo hecho en los modelos previos.
+
+```{r}
+# Selección de variables para el entrenamiento
+data_model_3 = data %>% select (-c("Peso", "Edad", "Altura",))
+```
+
+###  <font>Separación en train y test</font>
+
+Realizaremos una partición simple de los datos conjuntos de entrenamiento y de testeo, con 70% y 30% de los registros respectivamente:
+
+```{r}
+# Establecemos una semilla para garantizar reproducibilidad
+set.seed(100005)
+
+# Partición en train/test:
+train_test <- data_model_3 %>% initial_split(prop = 0.7)
+train <- training(train_test)
+test <- testing(train_test)
+```
+
+En lo que sigue, se entrenará un modelo lineal aplicando la regularización Lasso con **alfa = 1**, para anlizar la selección de variables:
+```{r}
+# Vector con los precios:
+prices_vector = train$Precio_usd
+# Matriz con los regresores
+medical_mtx = model.matrix(Precio_usd~., data = train)
+```
+###  <font>Entrenamiento del modelo</font>
+
+Aplicamos la misma función glmnet para incluir la regularización en el modelo lineal:
+```{r}
+# Modelo Lasso
+lasso.mod_3 = glmnet(x = medical_mtx, # Matriz de regresores
+                   y = prices_vector, # Vector con precios (variable target)
+                   alpha = 1, # regularización Lasso
+                   standardize = FALSE)
+
+# Aplicamos la función tidy para obtener los coeficientes del modelo:                
+lasso_coef_3 = lasso.mod_3 %>% 
+  tidy() %>% 
+  arrange(step)
+lasso_coef_3
+```
+
+###  <font>Gráficos e importancia de variables</font>
+
+Ploteamos una vez más los valores de los coeficientes vs lambda para entender cómo van eliminándose las variables al hacerse más restrictiva la regularización:
+
+```{r}
+plot(lasso.mod_3, "lambda")
+```
+
+Repetimos el plot de importancia de variables que usamos en el modelo anterior:
+```{r}
+# Seleccionamos los terminos que sobreviven para valores altos de lambda
+terminos_sobrevientes = lasso_coef_3 %>% 
+  filter(log(lambda)>0.5, term != "(Intercept)") %>%
+  select(term) %>% 
+  distinct() %>% 
+  pull()
+
+# Graficamos
+lasso_coef_3 %>% filter(term %in% terminos_sobrevientes) %>% 
+  ggplot(., aes(log(lambda), estimate, group=term, color=term)) +
+  geom_line(linewidth=1.1) +
+  geom_hline(yintercept = 0, linetype='dashed') +
+  theme_bw() +
+  labs(title="Lasso", y="Coeficientes", subtitle= "Importancia de variables - Modelo 3") +
+  scale_color_brewer(palette = 'Set1')
+```
+Además de notar la lógica aparición de variables adicionales (gracias a la inclusión de las variables categóricas), es apreciable que las más importantes se han modificado en este modelo respecto de lo ocurrido en los 2 modelos anteriores.
+
+Volvemos a hacer un zoom en este plot:
+
+```{r}
+# Seleccionamos los terminos que sobreviven para valores altos de lambda
+terminos_sobrevientes = lasso_coef_3 %>% 
+  filter(log(lambda)>1.4, term != "(Intercept)") %>%
+  select(term) %>% 
+  distinct() %>% 
+  pull()
+# Graficamos
+lasso_coef_3 %>% filter(term %in% terminos_sobrevientes) %>% 
+  ggplot(., aes(log(lambda), estimate, group=term, color=term)) +
+  geom_line(size=1.1) +
+  geom_hline(yintercept = 0, linetype='dashed') +
+  theme_bw() +
+  labs(title="Lasso", y="Coeficientes", subtitle= "\"Mejores\" variables - Modelo 3") +
+  scale_color_brewer(palette = 'Set1')
+```
+Ahora, no solo han cambiado las 4 variables más importantes del modelo, sino que dentro ellas podemos encontrar dos categóricas, siendo **Edad_CatJoven** la más importante (lo cual tiene gran sentido, considerando que se trata de seguros médicos).
+
+```{r}
+# Extraigo coeficientes excluyendo interceptos:
+lasso_coef_3 <- lasso.mod_3 %>%
+  tidy() %>%
+  filter(!(term == "(Intercept)")) %>%
+  arrange(step)
+
+# Tomo valor máximo de lambda para cada regresor:
+max_lambda_values <- lasso_coef_3 %>%
+  group_by(term) %>%
+  summarize(MaxLambda = max(lambda))
+
+# Ordeno valores descendentemente y presento como dataframe:
+sorted_max_lambda_values <- max_lambda_values %>%
+  arrange(desc(MaxLambda))
+
+print(sorted_max_lambda_values)
+```
+Las variables más importantes para este modelo resultaron ser:\
+- **Edad_CatJoven	**\
+- **CantCirugiasImportantes**\
+- **Edad_CatAdulto Mayor**\
+\
+mientras que las menos importantes resultaron:\
+- **Peso_Cat40-60**
+- **HistorialCancerFamiliar**\
+- **Peso_Cat61-80**
+
+Es interesante notar que tanto las 3 variables más importantes, como las 3 menos relevantes, se han modificado en este último modelo en relación a lo ocurrido en los modelos previos.
+
+###  <font>Selección de lambda óptimo</font>
+
+Repetimos el proceso para seleccionar el lambda óptimo para este modelo, a fin de realizar con él las predicciones finales y obtener las métricas de performance.
+
+```{r}
+# Aplicamos cross-validation para encontrar el valor óptimo de lambda:
+lasso_cv_3 = cv.glmnet(x = medical_mtx, 
+                     y = prices_vector, 
+                     alpha = 1, 
+                     standardize = FALSE)
+
+# Valor de lambda óptimo:
+print(paste("Valor de lambda óptimo: ",lasso_cv_3$lambda.min))
+```
+Este valor es distinto al hallado para los modelos anteriores.
+Graficamos los resultados:
+
+```{r}
+# Este plot muestra la media del MSE con su límite superior e inferior y la cantidad de variables que sobreviven para cada valor de lambda.
+plot(lasso_cv_3)
+```
+
+###  <font>Modelo final con lambda optimizado</font>
+
+Seleccionamos ahora el valor de lambda óptimo hallado (el que minimiza el MSE) para crear el modelo final:
+```{r}
+lasso_lambda_opt_3 = lasso_cv_3$lambda.min
+# Entrenamiento modelo óptimo
+lasso_opt_3 = glmnet(x = medical_mtx, # Matriz de regresores
+                   y = prices_vector, # Vector de la variable a predecir
+                   alpha = 1, # Indicador del tipo de regularizacion
+                   standardize = FALSE, # Estandarizamos
+                   lambda = lasso_lambda_opt_3)
+# Salida en formato tidy
+lasso_opt_3 %>% tidy()
+```
+
+Por ende, este modelo explica el 68,6% de la desviación, representando un **aumento** respecto del porcentaje de desviación explicada por los modelos previos (65%).
+
+
+###  <font>Predicciones</font>
+
+Repetimos la evaluación de nuestro modelo usando las métricas **MSE** y **Coeficiente de Determinación (R^2)** sobre los datasets de entrenamiento y testeo:
+
+En el set de entrenamiento:
+```{r}
+# TRAIN
+# Predicción en train:
+train_augmented <- augment_glmnet(df = train, y = "Precio_usd", model = lasso_opt_3)
+# Calculamos el error cuadrático medio (MSE)
+rmse <- sqrt(mean((train_augmented$Precio_usd_predicho - train$Precio_usd)^2))
+print(paste("Error Cuadrático Medio (MSE) en train:", rmse))
+
+# Calculamos el coeficiente de determinación (R^2)
+r_squared <- 1 - (sum((train$Precio_usd - train_augmented$Precio_usd_predicho)^2) / sum((train$Precio_usd - mean(train$Precio_usd))^2))
+print(paste("Coeficiente de Determinación (R^2) en train:", r_squared))
+```
+
+En el set de testeo:
+```{r}
+# TEST
+# Predicción en test:
+test_augmented <- augment_glmnet(df = test, y = "Precio_usd", model = lasso_opt_3)
+# Calculamos el error cuadrático medio (MSE)
+rmse <- sqrt(mean((test_augmented$Precio_usd_predicho - test$Precio_usd)^2))
+print(paste("Error Cuadrático Medio (MSE) en test:", rmse))
+
+# Calculamos el coeficiente de determinación (R^2)
+r_squared <- 1 - (sum((test$Precio_usd - test_augmented$Precio_usd_predicho)^2) / sum((test$Precio_usd - mean(test$Precio_usd))^2))
+print(paste("Coeficiente de Determinación (R^2) en test:", r_squared))
+```
+###  <font>Resumen</font>
+
+```{r}
+
+evaluar_modelo <- function(modelo, train_data, test_data, nombre_modelo, resultados_df = NULL) {
+  # Predicciones en ambos conjuntos
+  train_augmented <- augment_glmnet(df = train, y = "Precio_usd", model = lasso_opt_3)
+  test_augmented <- augment_glmnet(df = test, y = "Precio_usd", model = lasso_opt_3)
+
+  # Cálculo de métricas
+  rmse_train <- sqrt(mean((train_augmented$Precio_usd_predicho - train$Precio_usd)^2))
+  rmse_test <- sqrt(mean((test_augmented$Precio_usd_predicho - test$Precio_usd)^2))
+
+  r_squared_train <- 1 - (sum((train$Precio_usd - train_augmented$Precio_usd_predicho)^2) / sum((train$Precio_usd - mean(train$Precio_usd))^2))
+
+  
+  r_squared_test <- 1 - (sum((test$Precio_usd - test_augmented$Precio_usd_predicho)^2) / sum((test$Precio_usd - mean(test$Precio_usd))^2))
+  
+  # Dataframe con resultados
+  resultados_modelo <- data.frame(
+    Modelo = nombre_modelo,
+    Conjunto = c("Train", "Test"),
+    RMSE = c(rmse_train, rmse_test),
+    Rcuadrado = c(r_squared_train, r_squared_test)
+  )
+
+  # Agregar los resultados al dataframe en caso de que exista o no
+  if (is.null(resultados_df)) {
+    resultados_df <- resultados_modelo
+  } else {
+    resultados_df <- rbind(resultados_df, resultados_modelo)
+  }
+
+  return(resultados_df)
+}
+
+resultados_3 <- evaluar_modelo(modelo = lasso_opt_3, train_data = train, test_data = test, nombre_modelo = "Modelo_Lasso_3")
+resultados <- rbind(resultados_1, resultados_2, resultados_3)
+resultados
+```
+

@@ -1,0 +1,217 @@
+---
+title: "Variables Importantes: Random Forest vs Lasso"
+subtitle: "Análisis exploratorio de Datos"
+author: "Flores, Vanesa; Gianni, Tomás"
+date: "Diciembre 2023"
+output:
+  html_document:
+    toc: yes
+    code_folding: show
+    toc_float: yes
+    df_print: paged
+    theme: united
+    code_download: true
+---
+
+El propósito de esta notebook es explorar los datos que serán utilizados a lo largo de la presentación y, al mismo tiempo, aplicar el preprocesamiento necesario para la aplicación de los modelos.
+
+
+###  <font>Librerías útiles</font>
+
+Cargamos las librerías necesarias a nuestro entorno:
+```{r}
+library(tidyverse)
+library(lubridate)
+library(dplyr)
+library(kableExtra)
+library(GGally)
+library(ggplot2)
+library(reshape2)
+```
+
+
+###  <font>Carga de Datos</font>
+
+
+```{r}
+# Declaramos la ruta donde se alojan  el dataset
+datasets.dir = "C:/Users/vanes/Documents/UBA/2do_cuatrimestre/EEA/TP final/"
+
+# Datos
+data <- read.table(paste0(datasets.dir,"Medicalpremium.csv"),
+                              sep=",", dec=".", header = TRUE)
+
+```
+
+### - <font>Estructura:</font>
+
+Observemos algunas características del conjunto de datos:
+
+```{r}
+# Cantidad de filas y columnas
+cat("Dimensiones: ", dim(data), "\n")
+```
+
+Veamos ahora una pequeña muestra de los datos:
+
+```{r}
+
+options(knitr.table.format = "html") 
+data %>% 
+  head() %>% 
+  kable() %>% 
+  kable_styling(bootstrap_options = c("striped"))
+
+```
+```{r}
+
+# Creamos un resumen con los tipos de datos por variable
+resumen_tipo_datos <- sapply(data, class)
+
+# Contamos la cantidad de variables por tipo de dato
+cant_variables <- table(resumen_tipo_datos)
+
+# Imprimo el resumen sobre tipo de datos
+print(resumen_tipo_datos)
+print(cant_variables)
+
+```
+
+Detalle de las variables:
+
+- **Age**: edad del cliente.
+
+- **Diabetes**: si posee diabetes o no.
+
+- **BloodPressureProblems**: si posee problemas de presión sanguínea o no.
+
+- **AnyTransplants**: si posee algúnn transplante.
+
+- **AnyChronicDiseases**: si posee alguna enfermedad crónica.
+
+- **Height**: altura.
+
+- **Weight**: peso.
+
+- **Known Allergies**: si posee alguna alergia.
+
+- **HistoryOfCancerInFamily**: si posee antecedentes de cáncer en la familia
+
+- **NumberOfMajorSurgeries**: cantidad de cirugías importantes que ha sufrido
+
+- **PremiumPrice**: costo anual del paquete premium de cobertura médica, expresada en Rupias indias (INR).
+
+### - <font>Valores únicos y faltantes:</font>
+
+```{r}
+
+tabla_exploratorios =  data %>%
+                                      gather(., 
+                                            key = "variables", 
+                                            value = "valores") %>% 
+                                      group_by(variables) %>% 
+                                      summarise(valores_unicos = n_distinct(valores),
+                                      porcentaje_faltantes = sum(is.na(valores))/nrow(data)*100) %>% 
+                                      arrange(desc(porcentaje_faltantes), valores_unicos) 
+tabla_exploratorios
+
+```
+###  <font>Preprocesamiento</font>
+
+Realizamos algunos cambios pequeños en los datos para para su mejor interpretación y que además, nos servirá para implementaciones posteriores. 
+
+#### 1. Atributos a español:
+
+```{r}
+# Renombramos columnas
+names(data) <- c("Edad", "Diabetes", "ProblemasPresionArterial", "PoseeTransplante", "EnfermedadCronica", "Altura", "Peso", "Alergias", "HistorialCancerFamiliar", "CantCirugiasImportantes", "Precio")
+
+```
+
+#### 2. Conversión variable target:
+
+Transformamos la variable target convirtiendo el precio de Rupias Indias (INR) a Dólar Estadounidense (USD) tomando el valor de la tasa en [Currency Converter](https://www.xe.com/currencyconverter/convert/?Amount=1&From=INR&To=USD) al día 11 de Diciembre de 2023.
+
+```{r}
+# Transformamos variable target a Dólares
+data$Precio_usd <- data$Precio * 0.012
+
+```
+
+#### 3. Categorización de variables contínuas:
+Categorizamos las variables continuas Edad, Altura y Peso, tranformándolas en variables discretas a partir de rangos óptimos:
+
+```{r}
+# Definimos intervalos para categorizar cada variable
+intervalos_edad <- c(17, 30, 40, 50, 60, 70)
+intervalos_altura <- c(140, 160, 170, 180, 190)
+intervalos_peso <- c(40, 60, 80, 100, 120, 140)
+
+# Categorizamos
+data$Edad_Cat <- cut(data$Edad, breaks = intervalos_edad, labels = c("Joven", "Adulto Joven", "Adulto Medio", "Adulto Mayor", "Anciano"))
+data$Altura_Cat <- cut(data$Altura, breaks = intervalos_altura, labels = c("140-160", "161-170", "171-180", "181-190"))
+data$Peso_Cat <- cut(data$Peso, breaks = intervalos_peso, labels = c("40-60", "61-80", "81-100", "101-120", "121-140"))
+
+```
+
+### - <font>Valores Atípicos:</font>
+
+
+```{r}
+
+# Establezco una grilla de 1x4
+par(mfrow = c(1, 4))
+
+# Creo boxplots para cada variable
+boxplot(data$Edad, col = "skyblue", main = "Edad")
+boxplot(data$Altura, col = "lightgreen", main = "Altura")
+boxplot(data$Peso, col = "lightcoral", main = "Peso")
+boxplot(data$Precio_usd, col = "lightgoldenrod", main = "Precio_usd")
+
+```
+
+### - <font>Distribución de variables discretas:</font>
+
+```{r}
+# Seleccionar las variables que deseas graficar
+variables_a_graficar <- c("Diabetes", "ProblemasPresionArterial", "PoseeTransplante", "EnfermedadCronica", "Alergias", "HistorialCancerFamiliar", "CantCirugiasImportantes")
+
+
+options(repr.plot.width = 10, repr.plot.height = 6)
+
+ggplot(melt(data[, variables_a_graficar], id.vars = NULL), aes(x = value, fill = value, group = value)) +
+  geom_bar(position = "dodge", stat = "count") +
+  facet_wrap(~ variable, scales = "free", ncol = 3) +
+  ggtitle("Distribucion de variables discretas") +
+  xlab("Variables") +
+  ylab("Frecuencia") +
+  theme_minimal()
+```
+
+### - <font>Análisis de correlaciones:</font>
+
+```{r}
+
+
+data %>% 
+  select(-Edad_Cat, -Altura_Cat, -Peso_Cat, -Precio) %>%
+  mutate(HistorialCancerFamiliar = factor(HistorialCancerFamiliar)) %>% 
+  ggpairs(., aes(color = HistorialCancerFamiliar, alpha = 0.5), 
+          upper = list(continuous = wrap("cor", size = 2)),
+          progress = FALSE) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 1, hjust = 1,size=6),  
+    axis.text.y = element_text(angle = 0, vjust = 0.5, hjust = 1,size=6),  
+    legend.position = "bottom",
+    strip.text.x = element_text(angle = 0) 
+  )  
+
+
+```
+
+
+```{r}
+# Guardo archivo con modificaciones
+write.csv(data, paste0(datasets.dir,"Medicalpremium_new.csv"), row.names = FALSE)
+```

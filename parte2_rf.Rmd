@@ -1,0 +1,257 @@
+---
+title: "Variables Importantes: Random Forest vs Lasso"
+subtitle: "Implementación Random Forest"
+author: "Flores, Vanesa; Gianni, Tomás"
+date: "Diciembre 2023"
+output:
+  html_document:
+    toc: yes
+    code_folding: show
+    toc_float: yes
+    df_print: paged
+    theme: united
+    code_download: true
+---
+
+En esta notebook, llevaremos a cabo la implementación paso a paso de un modelo Random Forest. Con el objetivo de comprender cómo realiza la selección de variables más importantes, experimentaremos con diferentes conjuntos de variables de entrada y observaremos cómo varía el rendimiento del modelo, utilizando el RMSE y el R cuadrado como métricas de referencia.
+
+
+###  <font>Librerías útiles</font>
+
+Cargamos las librerías necesarias a nuestro entorno:
+```{r}
+# install.packages("randomForest")
+library("randomForest")
+library("caret")
+library("dplyr")
+library("ggplot2")
+```
+
+###  <font>Carga de Datos</font>
+
+
+```{r}
+# Declaramos la ruta donde se alojan el dataset
+datasets.dir = "C:/Users/vanes/Documents/UBA/2do_cuatrimestre/EEA/TP final/"
+
+# Datos
+data <- read.table(paste0(datasets.dir,"Medicalpremium_new.csv"),
+                              sep=",", dec=".", header = TRUE)
+
+```
+
+###  <font> Modelo 1:</font>
+
+En este primer modelo, realizaremos una implementación con todas las variables originales del dataset, excluyendo las variables de Peso, Edad y Altura categorizadas. Además, mantendremos los hiperparámetros por defecto.
+
+```{r}
+# Selección de variables para el entrenamiento
+data1 <- data[, c("Edad", "Diabetes", "ProblemasPresionArterial", "PoseeTransplante",  "EnfermedadCronica","Altura","Peso",                     "Alergias", "HistorialCancerFamiliar",  "CantCirugiasImportantes","Precio_usd")]
+```
+
+Ahora, realizaremos una partición simple de los datos en dos conjuntos: uno de entrenamiento con el 80% y otro de testeo con el restante.
+
+```{r}
+# Establecemos una semilla para garantizar reproducibilidad
+set.seed(880001)
+
+# Selección de índices para la partición
+index <- createDataPartition(data1$Precio_usd, p = 0.8, list = FALSE)
+train <- data1[index, ]
+test<- data1[-index, ]
+```
+
+En lo que sigue, entrenaremos el modelo con sus hiperparámetros por defecto y generaremos las predicciones tanto en train como en test:
+
+```{r}
+# Entreno el modelo
+rf1 <- randomForest(Precio_usd ~ ., data = train,  importance=TRUE)
+
+# Predicciones
+train_pred <- predict(rf1, newdata = train)
+test_pred <- predict(rf1, newdata = test)
+```
+
+Evaluamos el modelo utilizando como métricas el RMSE que nos proporciona una medida absoluta de la precisión de las predicciones y el R cuadrado que por su parte nos ofrece una medida relativa que evalúa la capacidad explicativa del modelo en términos de la variabilidad total de la variable de respuesta. Las calculamos para ambos conjuntos de datos.
+
+En entrenamiento:
+
+```{r}
+# Calcular el error cuadrático medio (RMSE)
+rmse <- sqrt(mean((train_pred - train$Precio_usd)^2))
+print(paste("Error Cuadrático Medio (RMSE):", rmse))
+
+# Calcular coeficiente de determinación (R^2)
+r_squared <- 1 - (sum((train$Precio_usd - train_pred)^2) / sum((train$Precio_usd - mean(train$Precio_usd))^2))
+print(paste("Coeficiente de Determinación (R^2):", r_squared))
+
+```
+
+En testeo: 
+
+```{r}
+# Calcular el error cuadrático medio (MSE)
+rmse <- sqrt(mean((test_pred - test$Precio_usd)^2))
+print(paste("Error Cuadrático Medio (RMSE):", rmse))
+
+# Calcular coeficiente de determinación (R^2)
+r_squared <- 1 - (sum((test$Precio_usd - test_pred)^2) / sum((test$Precio_usd - mean(test$Precio_usd))^2))
+print(paste("Coeficiente de Determinación (R^2):", r_squared))
+```
+Definimos una función que nos permitirá calcular las métricas de forma más práctica para los siguientes modelos a implementar:
+
+```{r}
+
+evaluar_modelo <- function(modelo, train_data, test_data, nombre_modelo, resultados_df = NULL) {
+  # Predicciones en ambos conjuntos
+  train_pred <- predict(modelo, newdata = train_data)
+  test_pred <- predict(modelo, newdata = test_data)
+
+  # Cálculo de métricas
+  rmse_train <- sqrt(mean((train_pred - train_data$Precio_usd)^2))
+  rmse_test <- sqrt(mean((test_pred - test_data$Precio_usd)^2))
+
+  r_squared_train <- 1 - (sum((train_data$Precio_usd - train_pred)^2) / sum((train_data$Precio_usd - mean(train_data$Precio_usd))^2))
+  
+  r_squared_test <- 1 - (sum((test_data$Precio_usd - test_pred)^2) / sum((test_data$Precio_usd - mean(test_data$Precio_usd))^2))
+  
+  # Dataframe con resultados
+  resultados_modelo <- data.frame(
+    Modelo = nombre_modelo,
+    Conjunto = c("Train", "Test"),
+    RMSE = c(rmse_train, rmse_test),
+    Rcuadrado = c(r_squared_train, r_squared_test)
+  )
+
+  # Agregar los resultados al dataframe en caso de que exista o no
+  if (is.null(resultados_df)) {
+    resultados_df <- resultados_modelo
+  } else {
+    resultados_df <- rbind(resultados_df, resultados_modelo)
+  }
+
+  return(resultados_df)
+}
+
+# Resultados del primer modelo
+resultados <- evaluar_modelo(modelo = rf1, train_data = train, test_data = test, nombre_modelo = "Modelo_1")
+resultados
+```
+
+Para observar la importancias de las variables para cada modelo, definimos también una función que graficará de forma ordenada, el ranking de importancias en un gráfico de barras.
+
+
+```{r}
+visualizar_importancia_variables <- function(modelo, nombre_modelo) {
+  # Obtener importancia de las variables
+  importancia_variables <- importance(modelo)
+
+  # Crear un dataframe para ggplot
+  importancia_df <- data.frame(
+    variable = rownames(importancia_variables),
+    importance = importancia_variables[, "%IncMSE"]
+  )
+
+  # Ordenar el dataframe por importancia
+  importancia_df <- importancia_df[order(importancia_df$importance, decreasing = TRUE), ]
+
+  # Crear el gráfico de barras
+  ggplot(importancia_df, aes(x = reorder(variable, importance), y = importance, fill = importance)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    coord_flip() +
+    ylab("Variable Importance") +
+    xlab("") +
+    ggtitle(paste("Importancia de Variables -", nombre_modelo)) +
+    guides(fill = "none") +
+    scale_fill_gradient(low = "lightblue", high = "blue")
+}
+
+# Graficamos la importancia de variables del Modelo 1
+visualizar_importancia_variables(rf1, nombre_modelo = "Modelo_1")
+```
+
+###  <font> Modelo 2:</font>
+
+En este segundo modelo realizaremos una exclusión de las variables menos importantes encontradas en el modelo 1, la Altura, las Alergias y la Diabetes, y observaremos qué cambios impactan en el modelo:
+
+```{r}
+# Selección de variables para el entrenamiento
+data2 <- data[, c("Edad","ProblemasPresionArterial", "PoseeTransplante",  "EnfermedadCronica","Peso",         "HistorialCancerFamiliar",  "CantCirugiasImportantes","Precio_usd")]
+```
+
+Realizamos una nueva división de los datos en train y test:
+
+```{r}
+# Establecemos una semilla para garantizar reproducibilidad
+set.seed(880001)
+
+# Selección de índices para la partición
+index <- createDataPartition(data2$Precio_usd, p = 0.8, list = FALSE)
+train <- data2[index, ]
+test<- data2[-index, ]
+```
+
+Definimos y entrenamos el nuevo modelo:
+
+```{r}
+# Entreno el modelo
+rf2 <- randomForest(Precio_usd ~ ., data = train,  importance=TRUE)
+```
+
+Calculamos las métricas para este modelo:
+
+```{r}
+resultados <- evaluar_modelo(modelo = rf2, train_data = train, test_data = test, nombre_modelo = "Modelo_2", resultados_df = resultados)
+
+resultados
+```
+
+Las variables importantes:
+
+```{r}
+visualizar_importancia_variables(rf2, nombre_modelo = "Modelo_2")
+```
+
+###  <font> Modelo 3:</font>
+
+Este último modelo, utiliza las variables de Peso, Edad y Altura categorizadas, a fin de observar si existe alguna variación en las variables más influyentes y el rendimiento del modelo:
+
+```{r}
+# Selección de variables para el entrenamiento
+
+data3 <- data[, c("Edad_Cat", "Diabetes", "ProblemasPresionArterial", "PoseeTransplante",  "EnfermedadCronica","Altura_Cat","Peso_Cat", "Alergias", "HistorialCancerFamiliar",  "CantCirugiasImportantes","Precio_usd")]
+
+```
+
+Realizamos una nueva división de los datos en train y test:
+
+```{r}
+# Establecemos una semilla para garantizar reproducibilidad
+set.seed(880001)
+
+# Selección de índices para la partición
+index <- createDataPartition(data3$Precio_usd, p = 0.8, list = FALSE)
+train <- data3[index, ]
+test<- data3[-index, ]
+```
+
+Definimos y entrenamos el nuevo modelo:
+
+```{r}
+# Entreno el modelo
+rf3 <- randomForest(Precio_usd ~ ., data = train,  importance=TRUE)
+```
+
+Calculamos las métricas para este modelo:
+
+```{r}
+resultados <- evaluar_modelo(modelo = rf3, train_data = train, test_data = test, nombre_modelo = "Modelo_3", resultados_df = resultados)
+
+resultados
+```
+
+Las variables importantes:
+
+```{r}
+visualizar_importancia_variables(rf3, nombre_modelo = "Modelo_3")
+```
